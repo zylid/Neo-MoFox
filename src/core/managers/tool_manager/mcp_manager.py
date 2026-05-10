@@ -343,8 +343,25 @@ class MCPManager:
             result = await session.list_tools()
             registry = get_global_registry()
             state_manager = get_global_state_manager()
-            
+
+            allowed: set[str] = set()
+            blocked: set[str] = set()
+            try:
+                from src.core.config import get_mcp_config
+                cfg = get_mcp_config()
+                server_cfg = cfg.mcp.stdio_servers.get(server_name) or {}
+                allowed = set(server_cfg.get("allowed_tools") or [])
+                blocked = set(server_cfg.get("blocked_tools") or [])
+            except Exception:
+                pass
+
             for tool in result.tools:
+                if blocked and tool.name in blocked:
+                    logger.info(f"[{server_name}] 跳过黑名单工具: {tool.name}")
+                    continue
+                if allowed and tool.name not in allowed:
+                    logger.info(f"[{server_name}] 跳过非白名单工具: {tool.name}")
+                    continue
                 adapter = MCPToolAdapter(server_name, tool, self)
                 self._adapters[adapter.tool_name] = adapter
                 logger.debug(f"发现 MCP 工具: {adapter.tool_name}")
