@@ -236,11 +236,13 @@ class BookuMemoryCommandTool(BaseTool):
         "遇到事实性/观点性/偏好性信息,主动 create 记录下来。"
         "【search 示例】用来查询已有记忆,常用于回忆用户偏好、过往约定、背景知识、梗与黑话。"
         '例: search -query "昵称偏好" -topn 3 '
-        '或: search -type knowledge -core_tags "物理" -topn 5'
+        '或: search -type knowledge -core_tags "物理" -diffusion_tags "学科,知识" -opposing_tags "文科" -topn 5'
         "。search 命中后可用 read -id <返回的 id> 获取全文。"
         "【create 必填字段】-title、-content、-core_tags、-diffusion_tags、-opposing_tags 五项缺一不可;"
         "若 -type 为 person 还必须补 -person_id(格式 platform:id)。"
-        "【标签三元规则】-core_tags、-diffusion_tags、-opposing_tags 三组要么都不传,要么全传,每组至少一个,"
+        "【标签三元规则·重要】-core_tags、-diffusion_tags、-opposing_tags 是绑定的三元组,"
+        "在任何命令(search/create/update)中,要么三组都不传,要么三组同时传(每组至少一个);"
+        "禁止只传一组或两组,否则会报错。"
         '也可用 -triple_tags "核心1,核心2|扩散1|对立1" 合并传入。'
         "【create 最小范例】"
         'create -title "昵称偏好" -content "用户希望被叫作小X" '
