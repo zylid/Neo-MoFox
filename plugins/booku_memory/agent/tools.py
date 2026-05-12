@@ -73,10 +73,48 @@ def _split_segments(command: str) -> list[str]:
     return [part.strip() for part in command.split("&&") if part.strip()]
 
 
+def _safe_shlex_split(segment: str) -> list[str]:
+    """容错的 shlex 分词。
+
+    LLM 生成的命令经常出现引号不闭合,这里依次尝试:
+    1) 严格 posix 模式
+    2) 自动补齐末尾缺失的引号后重试
+    3) posix=False 宽松模式
+    任意一种成功即返回;全部失败时抛出带提示的 ValueError。
+    """
+
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        pass
+
+    single = segment.count("'") - segment.count("\\'")
+    double = segment.count('"') - segment.count('\\"')
+    patched = segment
+    if double % 2 == 1:
+        patched += '"'
+    if single % 2 == 1:
+        patched += "'"
+    if patched != segment:
+        try:
+            return shlex.split(patched)
+        except ValueError:
+            pass
+
+    try:
+        return shlex.split(segment, posix=False)
+    except ValueError as exc:
+        raise ValueError(
+            f"命令分词失败({exc})。请检查引号是否成对闭合,"
+            f"或在 -content 等长文本参数里用 \\\" 转义内嵌双引号。"
+            f"原始片段: {segment[:160]}"
+        ) from exc
+
+
 def _parse_segment(segment: str) -> tuple[str, dict[str, list[str]]]:
     """解析单条命令段为操作名和参数表。"""
 
-    tokens = shlex.split(segment)
+    tokens = _safe_shlex_split(segment)
     if not tokens:
         raise ValueError("空命令段")
 
@@ -194,8 +232,20 @@ class BookuMemoryCommandTool(BaseTool):
     tool_description: str = (
         "Booku Memory 命令工具。"
         "支持 help/search/read/create/update/delete。"
-        "使用该工具应当非常频繁，多记多读。"
-
+        "【使用原则】多查多记,对话前应先 search 看有没有相关记忆;"
+        "遇到事实性/观点性/偏好性信息,主动 create 记录下来。"
+        "【search 示例】用来查询已有记忆,常用于回忆用户偏好、过往约定、背景知识、梗与黑话。"
+        '例: search -query "昵称偏好" -topn 3 '
+        '或: search -type knowledge -core_tags "物理" -topn 5'
+        "。search 命中后可用 read -id <返回的 id> 获取全文。"
+        "【create 必填字段】-title、-content、-core_tags、-diffusion_tags、-opposing_tags 五项缺一不可;"
+        "若 -type 为 person 还必须补 -person_id(格式 platform:id)。"
+        "【标签三元规则】-core_tags、-diffusion_tags、-opposing_tags 三组要么都不传,要么全传,每组至少一个,"
+        '也可用 -triple_tags "核心1,核心2|扩散1|对立1" 合并传入。'
+        "【create 最小范例】"
+        'create -title "昵称偏好" -content "用户希望被叫作小X" '
+        '-core_tags "昵称" -diffusion_tags "称呼,昵称偏好" -opposing_tags "本名"'
+        "。不确定语法时先调用 help 查看完整手册。"
     )
 
     async def execute(
