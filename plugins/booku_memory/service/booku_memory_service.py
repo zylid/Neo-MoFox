@@ -2469,6 +2469,49 @@ class BookuMemoryService(BaseService):
             existing_ids.add(normalized_id)
 
         if semantic_query:
+            if normalized_query:
+                literal_tokens = [
+                    token for token in normalized_query.split() if len(token) >= 2
+                ]
+                if not literal_tokens:
+                    literal_tokens = [normalized_query]
+                literal_hit_count: dict[str, int] = {}
+                literal_hit_record: dict[str, Any] = {}
+                for token in literal_tokens[:5]:
+                    literal_records = await repo.search_records(
+                        keyword=token,
+                        memory_type=normalized_type,
+                        status=normalized_status,
+                        person_id=normalized_person_id,
+                        relation_of=normalized_relation_of,
+                        include_deleted=False,
+                        limit=normalized_top_n * 3,
+                    )
+                    for record in literal_records:
+                        if not include_archived and str(record.status).lower() == "archived":
+                            continue
+                        if not include_knowledge and str(record.memory_type).lower() == "knowledge":
+                            continue
+                        literal_hit_count[record.memory_id] = (
+                            literal_hit_count.get(record.memory_id, 0) + 1
+                        )
+                        literal_hit_record[record.memory_id] = record
+                for memory_id in sorted(
+                    literal_hit_count,
+                    key=lambda mid: (
+                        -literal_hit_count[mid],
+                        -float(literal_hit_record[mid].updated_at or 0.0),
+                    ),
+                ):
+                    if len(entries) >= normalized_top_n:
+                        break
+                    record = literal_hit_record[memory_id]
+                    _append_entry(
+                        memory_id=record.memory_id,
+                        title=record.title,
+                        metadata=self._metadata_from_record(record),
+                    )
+
             retrieved = await self.retrieve_memories(
                 query_text=semantic_query,
                 top_k=normalized_top_n * 3,
