@@ -242,7 +242,17 @@ async def run_chat_stream(
                 # 2. 消息缓冲机制检查
                 # 若距上次收到消息未超过缓冲窗口，则跳过本次 Tick（等待用户连续消息合并），
                 # 但当连续跳过次数已达上限时强制继续，防止高压群聊导致 Bot 始终无法响应。
-                if resume_event is None and not manager._message_buffer_check(stream_id, context):
+                #
+                # 适用来源：
+                # - resume_event is None：常规 Tick。
+                # - resume_event.source == "message"：Wait/Stop 因新未读消息恢复；
+                #   此时若用户仍在连发，同样应让缓冲窗口生效，而不是绕过 buffer 立刻秒回。
+                # 其他来源（timer / sub_agent）由框架或子代理主动驱动，不受用户消息缓冲约束。
+                is_message_triggered = resume_event is None or resume_event.source == "message"
+                if is_message_triggered and not manager._message_buffer_check(stream_id, context):
+                    # 缓冲拦截时把 resume_event 放回 pending，下个 Tick 再消费，避免事件丢失。
+                    if resume_event is not None:
+                        manager._pending_wait_resume_events[stream_id] = resume_event
                     continue
 
                 # 3. 获取或创建 chatter_gene

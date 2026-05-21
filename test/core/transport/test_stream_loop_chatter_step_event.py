@@ -394,6 +394,200 @@ async def test_run_chat_stream_keeps_timer_resume_event_across_message_buffer_sk
 
 
 @pytest.mark.asyncio
+async def test_run_chat_stream_message_resume_event_respects_message_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """source='message' 的 resume 事件应受消息缓冲约束，避免用户连发时秒回。
+
+    Wait 因新未读消息被唤醒（source='message'）时，若仍在缓冲窗口内，
+    应跳过当前 tick，并把 resume_event 放回 pending，等下一 tick 再消费。
+    """
+    stream_id = "stream-message-resume-buffered"
+    received_events: list[WaitResumeEvent | None] = []
+
+    async def _two_ticks(*_args, **_kwargs):
+        yield SimpleNamespace(stream_id=stream_id, tick_count=1)
+        yield SimpleNamespace(stream_id=stream_id, tick_count=2)
+
+    async def chatter_generator():
+        resume_event = yield Wait(time=None)
+        received_events.append(resume_event)
+        yield Success(message="ok")
+
+    chatter_gene = chatter_generator()
+    first_wait = await anext(chatter_gene)
+    assert isinstance(first_wait, Wait)
+
+    context = SimpleNamespace(
+        unread_messages=[SimpleNamespace(sender_id="u1")],
+        is_chatter_processing=False,
+        triggering_user_id=None,
+        stream_loop_task=None,
+    )
+
+    event_manager = SimpleNamespace(
+        publish_event=AsyncMock(
+            return_value={
+                "decision": "SUCCESS",
+                "params": {
+                    "stream_id": stream_id,
+                    "context": context,
+                    "tick": SimpleNamespace(stream_id=stream_id, tick_count=2),
+                    "chatter_gene": chatter_gene,
+                    "continue": True,
+                },
+            }
+        )
+    )
+
+    monkeypatch.setattr("src.core.transport.distribution.loop.conversation_loop", _two_ticks)
+    monkeypatch.setattr(
+        "src.core.transport.distribution.loop.get_core_config",
+        lambda: SimpleNamespace(bot=SimpleNamespace(stream_step_timeout=60.0)),
+    )
+    monkeypatch.setattr(
+        "src.core.managers.get_chatter_manager",
+        lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "src.core.managers.get_event_manager",
+        lambda: event_manager,
+    )
+    monkeypatch.setattr(
+        "src.core.transport.distribution.loop.get_watchdog",
+        lambda: SimpleNamespace(
+            feed_dog=lambda stream_id=None, **_kwargs: None,
+            unregister_stream=lambda stream_id=None, **_kwargs: None,
+        ),
+    )
+
+    manager = StreamLoopManager()
+    manager.is_running = True
+    manager._chatter_genes[stream_id] = chatter_gene
+    # pending message resume：模拟 _wait_state_check 因新未读消息产出的 resume 事件。
+    manager._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+        source="message", wait_time=None, unread_count=1
+    )
+
+    async def _get_context(_stream_id: str):
+        if context.stream_loop_task is None:
+            context.stream_loop_task = asyncio.current_task()
+        return context
+
+    buffer_results = iter([False, True])
+
+    manager._get_stream_context = _get_context  # type: ignore[method-assign]
+    manager._flush_cached_messages_to_unread = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    manager._message_buffer_check = lambda _stream_id, _context: next(buffer_results)  # type: ignore[method-assign]
+
+    await run_chat_stream(stream_id=stream_id, manager=manager)
+
+    # 第一 tick 被 buffer 拦截、resume_event 回到 pending；第二 tick 放行并消费。
+    assert len(received_events) == 1
+    assert received_events[0] is not None
+    assert received_events[0].source == "message"
+    assert manager._stats["total_process_cycles"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_timer_resume_event_bypasses_message_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """source='timer'/'sub_agent' 的 resume 不应被消息缓冲拦截。
+
+    定时唤醒和子代理回调是框架/子代理主动驱动的，不属于用户连发场景，
+    即便消息缓冲窗口未结束也应立刻送回生成器，避免子代理结果堆积或定时
+    任务被人为延迟。
+    """
+    stream_id = "stream-timer-resume-bypasses-buffer"
+    received_events: list[WaitResumeEvent | None] = []
+
+    async def _one_tick(*_args, **_kwargs):
+        yield SimpleNamespace(stream_id=stream_id, tick_count=1)
+
+    async def chatter_generator():
+        resume_event = yield Wait(time=0.0)
+        received_events.append(resume_event)
+        yield Success(message="ok")
+
+    chatter_gene = chatter_generator()
+    first_wait = await anext(chatter_gene)
+    assert isinstance(first_wait, Wait)
+
+    context = SimpleNamespace(
+        unread_messages=[],
+        is_chatter_processing=False,
+        triggering_user_id=None,
+        stream_loop_task=None,
+    )
+
+    event_manager = SimpleNamespace(
+        publish_event=AsyncMock(
+            return_value={
+                "decision": "SUCCESS",
+                "params": {
+                    "stream_id": stream_id,
+                    "context": context,
+                    "tick": SimpleNamespace(stream_id=stream_id, tick_count=1),
+                    "chatter_gene": chatter_gene,
+                    "continue": True,
+                },
+            }
+        )
+    )
+
+    monkeypatch.setattr("src.core.transport.distribution.loop.conversation_loop", _one_tick)
+    monkeypatch.setattr(
+        "src.core.transport.distribution.loop.get_core_config",
+        lambda: SimpleNamespace(bot=SimpleNamespace(stream_step_timeout=60.0)),
+    )
+    monkeypatch.setattr(
+        "src.core.managers.get_chatter_manager",
+        lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "src.core.managers.get_event_manager",
+        lambda: event_manager,
+    )
+    monkeypatch.setattr(
+        "src.core.transport.distribution.loop.get_watchdog",
+        lambda: SimpleNamespace(
+            feed_dog=lambda stream_id=None, **_kwargs: None,
+            unregister_stream=lambda stream_id=None, **_kwargs: None,
+        ),
+    )
+
+    manager = StreamLoopManager()
+    manager.is_running = True
+    manager._chatter_genes[stream_id] = chatter_gene
+    manager._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+        source="timer", wait_time=0.0
+    )
+
+    buffer_invocations = 0
+
+    def _buffer_should_not_be_called(_stream_id: str, _context: object) -> bool:
+        nonlocal buffer_invocations
+        buffer_invocations += 1
+        return False
+
+    async def _get_context(_stream_id: str):
+        if context.stream_loop_task is None:
+            context.stream_loop_task = asyncio.current_task()
+        return context
+
+    manager._get_stream_context = _get_context  # type: ignore[method-assign]
+    manager._flush_cached_messages_to_unread = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    manager._message_buffer_check = _buffer_should_not_be_called  # type: ignore[method-assign]
+
+    await run_chat_stream(stream_id=stream_id, manager=manager)
+
+    assert buffer_invocations == 0
+    assert received_events == [WaitResumeEvent(source="timer", wait_time=0.0)]
+    assert manager._stats["total_process_cycles"] == 1
+
+
+@pytest.mark.asyncio
 async def test_run_chat_stream_prioritizes_pending_sub_agent_resume_over_wait_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
