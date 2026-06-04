@@ -126,6 +126,10 @@ class SubAgentSession:
     pending_questions: list[tuple[str, bool]] = field(default_factory=list)
     current_task: asyncio.Task[Any] | None = None
     cross_round_seen_signatures: set[str] = field(default_factory=set)
+    idle_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.idle_event.set()
 
     def append_activity(self, activity_type: str, content: str) -> None:
         """追加一条活动记录。"""
@@ -298,6 +302,7 @@ class SubAgentCollaborationManager:
         if not normalized_question:
             return False
         session.pending_questions.append((normalized_question, visible))
+        session.idle_event.clear()
         return True
 
     def _ensure_background_runner(
@@ -380,6 +385,7 @@ class SubAgentCollaborationManager:
             await self._resume_actor(stream_id=session.stream_id)
         finally:
             session.current_task = None
+            session.idle_event.set()
 
     async def _resume_actor(self, *, stream_id: str) -> None:
         """向主 actor 注入一次恢复信号。"""
@@ -590,6 +596,7 @@ class SubAgentCollaborationManager:
         question: str,
         message_limit: int,
         enable_action_suspend: bool,
+        wait: bool = False,
     ) -> dict[str, Any]:
         """向指定子代理发送一条指令，并返回活动快照。"""
         sessions = self._get_stream_sessions(chatter.stream_id)
@@ -604,6 +611,9 @@ class SubAgentCollaborationManager:
                 session=session,
                 enable_action_suspend=enable_action_suspend,
             )
+
+        if wait:
+            await session.idle_event.wait()
 
         return self._snapshot(session, message_limit=message_limit)
 

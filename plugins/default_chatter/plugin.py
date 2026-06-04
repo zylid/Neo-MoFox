@@ -587,6 +587,7 @@ class GetAgentUsable(_SubAgentManagementUsable):
         name: str,
         message_limit: int = 10,
         question: str = "",
+        wait: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         """获取子代理状态或向其发送新指令。
 
@@ -594,12 +595,14 @@ class GetAgentUsable(_SubAgentManagementUsable):
             name: 子代理标识名
             message_limit: 最近活动记录条数，0 表示全部
             question: 要发送给子代理的问题或指令，留空则只查看状态
+            wait: 是否阻塞等待子代理处理完本次问题后再返回；默认 False 保持原异步行为
         """
         chatter = DefaultChatter(self.stream_id, self.plugin)
         return await chatter.query_managed_sub_agent(
             name=name,
             message_limit=message_limit,
             question=question,
+            wait=wait,
         )
 
 
@@ -1131,6 +1134,7 @@ class DefaultChatter(BaseChatter):
         name: str,
         message_limit: int,
         question: str,
+        wait: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         """查询或驱动一个受管子代理。"""
         manager = get_sub_agent_collaboration_manager()
@@ -1141,6 +1145,7 @@ class DefaultChatter(BaseChatter):
                 question=question,
                 message_limit=max(0, int(message_limit)),
                 enable_action_suspend=self._is_action_suspend_enabled(),
+                wait=wait,
             )
         except ValueError as error:
             return False, {"error": str(error), "name": name}
